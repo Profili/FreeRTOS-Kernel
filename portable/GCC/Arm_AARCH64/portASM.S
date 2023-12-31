@@ -1,5 +1,5 @@
 /*
- * FreeRTOS Kernel V10.6.1
+ * FreeRTOS Kernel V11.0.1
  * Copyright (C) 2021 Amazon.com, Inc. or its affiliates.  All Rights Reserved.
  *
  * SPDX-License-Identifier: MIT
@@ -37,6 +37,8 @@
     .extern ullPortTaskHasFPUContext
     .extern ullCriticalNesting
     .extern ullPortYieldRequired
+    .extern ullICCEOIR
+    .extern ullICCIAR
     .extern _freertos_vector_table
 
     .global FreeRTOS_IRQ_Handler
@@ -140,12 +142,14 @@
     depth. */
     LDR     X0, ullCriticalNestingConst /* X0 holds the address of ullCriticalNesting. */
     MOV     X1, #255                    /* X1 holds the unmask value. */
+    LDR     X4, ullICCPMRConst          /* X4 holds the address of the ICCPMR constant. */
     CMP     X3, #0
+    LDR     X5, [X4]                    /* X5 holds the address of the ICCPMR register. */
     B.EQ    1f
     LDR     X6, ullMaxAPIPriorityMaskConst
     LDR     X1, [X6]                    /* X1 holds the mask value. */
 1:
-    MSR     s3_0_c4_c6_0, X1            /* Write the mask value to ICCPMR. s3_0_c4_c6_0 is ICC_PMR_EL1. */
+    STR     W1, [X5]                    /* Write the mask value to ICCPMR. */
     DSB     SY                          /* _RB_Barriers probably not required here. */
     ISB     SY
     STR     X3, [X0]                    /* Restore the task's critical nesting count. */
@@ -267,14 +271,6 @@ vPortRestoreTaskContext:
 
 /******************************************************************************
  * FreeRTOS_IRQ_Handler handles IRQ entry and exit.
-
- * This handler is supposed to be used only for IRQs and never for FIQs. Per ARM
- * GIC documentation [1], Group 0 interrupts are always signaled as FIQs. Since
- * this handler is only for IRQs, We can safely assume Group 1 while accessing
- * Interrupt Acknowledge and End Of Interrupt registers and therefore, use
- * ICC_IAR1_EL1 and ICC_EOIR1_EL1.
- *
- * [1] https://developer.arm.com/documentation/198123/0300/Arm-CoreLink-GIC-fundamentals
  *****************************************************************************/
 .align 8
 .type FreeRTOS_IRQ_Handler, %function
@@ -311,11 +307,13 @@ FreeRTOS_IRQ_Handler:
     /* Maintain the interrupt nesting information across the function call. */
     STP     X1, X5, [SP, #-0x10]!
 
-    /* Read interrupt ID from the interrupt acknowledge register and store it
-    in X0 for future parameter and interrupt clearing use. */
-    MRS     X0, S3_0_C12_C12_0  /* S3_0_C12_C12_0 is ICC_IAR1_EL1. */
+    /* Read value from the interrupt acknowledge register, which is stored in W0
+    for future parameter and interrupt clearing use. */
+    LDR     X2, ullICCIARConst
+    LDR     X3, [X2]
+    LDR     W0, [X3]    /* ICCIAR in W0 as parameter. */
 
-    /* Maintain the interrupt ID value across the function call. */
+    /* Maintain the ICCIAR value across the function call. */
     STP     X0, X1, [SP, #-0x10]!
 
     /* Call the C handler. */
@@ -326,11 +324,13 @@ FreeRTOS_IRQ_Handler:
     DSB     SY
     ISB     SY
 
-    /* Restore the interrupt ID value. */
+    /* Restore the ICCIAR value. */
     LDP     X0, X1, [SP], #0x10
 
-    /* End IRQ processing by writing interrupt ID value to the EOI register. */
-    MSR     S3_0_C12_C12_1, X0  /* S3_0_C12_C12_1 is ICC_EOIR1_EL1. */
+    /* End IRQ processing by writing ICCIAR to the EOI register. */
+    LDR     X4, ullICCEOIRConst
+    LDR     X4, [X4]
+    STR     W0, [X4]
 
     /* Restore the critical nesting count. */
     LDP     X1, X5, [SP], #0x10
@@ -414,8 +414,14 @@ pxCurrentTCBConst: .dword pxCurrentTCB
 ullCriticalNestingConst: .dword ullCriticalNesting
 ullPortTaskHasFPUContextConst: .dword ullPortTaskHasFPUContext
 
+ullICCPMRConst: .dword ullICCPMR
 ullMaxAPIPriorityMaskConst: .dword ullMaxAPIPriorityMask
 ullPortInterruptNestingConst: .dword ullPortInterruptNesting
 ullPortYieldRequiredConst: .dword ullPortYieldRequired
+ullICCIARConst: .dword ullICCIAR
+ullICCEOIRConst: .dword ullICCEOIR
+vApplicationIRQHandlerConst: .word vApplicationIRQHandler
+
+
 
 .end
